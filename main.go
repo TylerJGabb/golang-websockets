@@ -73,61 +73,66 @@ func (h *MyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func SockClientSendMsg() {
 	// init
+	fmt.Printf("Client: Resolving TCP address...\n")
 	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8081")
 	if err != nil {
 		fmt.Printf("Error resolving TCP address: %v\n", err)
 	}
+	// connect
+	fmt.Printf("Client: Dialing...\n")
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		fmt.Printf("Error dialing: %v\n", err)
 	}
 	// send message
+	fmt.Printf("Client: Sending...\n")
 	_, err = conn.Write([]byte(time.Now().UTC().String()))
 	if err != nil {
 		fmt.Printf("Error writing: %v\n", err)
 	}
 	// receive message
-	var buf [1024]byte
+	buf := make([]byte, 1024)
 	_, err = conn.Read(buf[0:])
 	if err != nil {
 		fmt.Printf("Error reading: %v\n", err)
 	}
+	fmt.Printf("Client: Read %v bytes: %v\n", len(buf), string(buf))
 }
 
 // https://yalantis.com/blog/how-to-build-websockets-in-go/
 func StartSockServer() {
-	fmt.Printf("Resolving TCP address...\n")
+	fmt.Printf("Server: Resolving TCP address...\n")
 	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8081")
 	if err != nil {
 		fmt.Printf("Error resolving TCP address: %v\n", err)
 		return
 	}
-	fmt.Printf("Listening...\n")
+	fmt.Printf("Server: Listening...\n")
 	listener, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
 		return
 	}
 	for {
-		fmt.Printf("Accepting...\n")
+		fmt.Printf("Server: Accepting...\n")
 		conn, err := listener.AcceptTCP()
 		if err != nil {
 			fmt.Printf("Error accepting: %v\n", err)
 			return
 		}
-		fmt.Printf("Writing...\n")
-		if _, err := conn.Write([]byte("hello")); err != nil {
+		fmt.Printf("Server: Writing...\n")
+		if _, err := conn.Write([]byte("hello from server")); err != nil {
 			fmt.Printf("Error writing: %v\n", err)
 			return
 		}
 		buf := make([]byte, 1024)
-		fmt.Printf("Waiting for data...\n")
+		fmt.Printf("Server: Waiting for data...\n")
 		n, err := conn.Read(buf[0:])
 		if err != nil {
 			fmt.Printf("Error reading: %v\n", err)
 			return
 		}
-		fmt.Printf("Read %v bytes: %v\n", n, string(buf))
+		fmt.Printf("Server: Read %v bytes: %v\n", n, string(buf))
 	}
 }
 
