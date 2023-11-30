@@ -6,12 +6,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"time"
 
 	//	"html"
 
 	"net/http"
-	"os"
 	// yaml "gopkg.in/yaml.v3"
 )
 
@@ -71,17 +71,89 @@ func (h *MyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func main() {
-	port, portSet := os.LookupEnv("PORT")
-	if !portSet {
-		port = "8080"
+func SockClientSendMsg() {
+	// init
+	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8081")
+	if err != nil {
+		fmt.Printf("Error resolving TCP address: %v\n", err)
 	}
+	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		fmt.Printf("Error dialing: %v\n", err)
+	}
+	// send message
+	_, err = conn.Write([]byte(time.Now().UTC().String()))
+	if err != nil {
+		fmt.Printf("Error writing: %v\n", err)
+	}
+	// receive message
+	var buf [1024]byte
+	_, err = conn.Read(buf[0:])
+	if err != nil {
+		fmt.Printf("Error reading: %v\n", err)
+	}
+}
 
-	http.HandleFunc("/mirrorHeaders", mirrorHeaders)
-	http.HandleFunc("/ws", wsHandler)
-	http.Handle("/", &MyHandler{})
-	fmt.Println("Server is running on port", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		panic(err)
+// https://yalantis.com/blog/how-to-build-websockets-in-go/
+func StartSockServer() {
+	fmt.Printf("Resolving TCP address...\n")
+	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8081")
+	if err != nil {
+		fmt.Printf("Error resolving TCP address: %v\n", err)
+		return
 	}
+	fmt.Printf("Listening...\n")
+	listener, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		fmt.Printf("Error listening: %v\n", err)
+		return
+	}
+	for {
+		fmt.Printf("Accepting...\n")
+		conn, err := listener.AcceptTCP()
+		if err != nil {
+			fmt.Printf("Error accepting: %v\n", err)
+			return
+		}
+		fmt.Printf("Writing...\n")
+		if _, err := conn.Write([]byte("hello")); err != nil {
+			fmt.Printf("Error writing: %v\n", err)
+			return
+		}
+		buf := make([]byte, 1024)
+		fmt.Printf("Waiting for data...\n")
+		n, err := conn.Read(buf[0:])
+		if err != nil {
+			fmt.Printf("Error reading: %v\n", err)
+			return
+		}
+		fmt.Printf("Read %v bytes: %v\n", n, string(buf))
+	}
+}
+
+func main() {
+	// port, portSet := os.LookupEnv("PORT")
+	// if !portSet {
+	// 	port = "8080"
+	// }
+
+	// http.HandleFunc("/mirrorHeaders", mirrorHeaders)
+	// http.HandleFunc("/ws", wsHandler)
+	// http.Handle("/", &MyHandler{})
+	// fmt.Println("Server is running on port", port)
+	// go func() {
+	// 	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	// 		panic(err)
+	// 	}
+	// }()
+	go func() {
+		StartSockServer()
+	}()
+	for {
+		time.Sleep(5 * time.Second)
+		SockClientSendMsg()
+	}
+	// sleep forever
+	select {}
+
 }
