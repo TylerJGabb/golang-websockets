@@ -12,6 +12,24 @@ import (
 	"net/http"
 )
 
+const (
+	OPCODE_CONTINUATION = 0x0
+	OPCODE_TEXT         = 0x1
+	OPCODE_BINARY       = 0x2
+	OPCODE_CLOSE        = 0x8
+	OPCODE_PING         = 0x9
+	OPCODE_PONG         = 0xA
+)
+
+const (
+	FRAME_FIN_NO_MORE_FRAMES = 0x0
+	FRAME_FIN_MORE_FRAMES    = 0x1
+)
+
+var (
+	readCounter int = 0
+)
+
 type WS struct {
 	Connection net.Conn
 	ReadWriter *bufio.ReadWriter
@@ -30,10 +48,6 @@ type Frame struct {
 	Payload string `json:"payload"`
 }
 
-var (
-	readCounter int = 0
-)
-
 func (ws *WS) Read() (Frame, error) {
 	readCounter++
 	fmt.Printf("DEBUG: Inside Read %d\n", readCounter)
@@ -47,13 +61,13 @@ func (ws *WS) Read() (Frame, error) {
 	rsv1 := o1&0x40 != 0
 	rsv2 := o1&0x20 != 0
 	rsv3 := o1&0x10 != 0
-	maskGroup := o2&0x80 != 0
+	isMasked := o2&0x80 != 0
 	opcode := o2 & 0x7f
 	fmt.Printf("FIN: %v\n", fin)
 	fmt.Printf("RSV1: %v\n", rsv1)
 	fmt.Printf("RSV2: %v\n", rsv2)
 	fmt.Printf("RSV3: %v\n", rsv3)
-	fmt.Printf("MASK_GROUP: %v\n", maskGroup)
+	fmt.Printf("IS_MASKED: %v\n", isMasked)
 	fmt.Printf("OPCODE: %x\n", opcode)
 
 	length := uint64(o2 & 0x7f)
@@ -82,7 +96,7 @@ func (ws *WS) Read() (Frame, error) {
 	fmt.Printf("LENGTH: %v\n", length)
 
 	maskBytes := make([]byte, 4)
-	if maskGroup {
+	if isMasked {
 		io.ReadFull(ws.ReadWriter, maskBytes)
 		fmt.Print("MASK: ")
 		for _, b := range maskBytes {
@@ -91,12 +105,11 @@ func (ws *WS) Read() (Frame, error) {
 		fmt.Println()
 	}
 	mask := binary.BigEndian.Uint32(maskBytes)
-	// not this simple, you need to unmask the payload
-	// https://datatracker.ietf.org/doc/html/rfc6455#section-5.3
 	payload := make([]byte, length)
 	io.ReadFull(ws.ReadWriter, payload)
 	for i, octet := range payload {
 		j := i % 4
+		// it would be faster to bit shift, but this is easier to read
 		transform := maskBytes[j]
 		after := octet ^ transform
 		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
@@ -109,7 +122,7 @@ func (ws *WS) Read() (Frame, error) {
 		Rsv2:    rsv2,
 		Rsv3:    rsv3,
 		Opcode:  opcode,
-		Masked:  maskGroup,
+		Masked:  isMasked,
 		Mask:    mask,
 		Length:  length,
 		Payload: string(payload),
