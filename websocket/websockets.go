@@ -6,36 +6,10 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-)
-
-const (
-	OPCODE_CONTINUATION = 0x0
-	OPCODE_TEXT         = 0x1
-	OPCODE_BINARY       = 0x2
-	OPCODE_CLOSE        = 0x8
-	OPCODE_PING         = 0x9
-	OPCODE_PONG         = 0xA
-)
-
-const (
-	STATUS_CODE_NORMAL_CLOSURE             = 1000
-	STATUS_CODE_GOING_AWAY                 = 1001
-	STATUS_CODE_PROTOCOL_ERROR             = 1002
-	STATUS_CODE_UNSUPPORTED_DATA_TYPE      = 1003
-	STATUS_CODE_RESERVED                   = 1004
-	STATUS_CODE_NO_STATUS_CODE_PRESENT     = 1005
-	STATUS_CODE_ABNORMAL_CLOSURE           = 1006
-	STATUS_CODE_INVALID_FRAME_PAYLOAD_DATA = 1007
-	STATUS_CODE_POLICY_VIOLATION           = 1008
-	STATUS_CODE_MESSAGE_TOO_BIG            = 1009
-	STATUS_CODE_MANDATORY_EXTENSION        = 1010
-	STATUS_CODE_INTERNAL_SERVER_ERROR      = 1011
-	STATUS_CODE_TLS_HANDSHAKE              = 1015
 )
 
 var (
@@ -60,14 +34,19 @@ type Frame struct {
 	Payload []byte `json:"payload"`
 }
 
-var (
-	// https://datatracker.ietf.org/doc/html/rfc6455#section-5.5.1
-	CLOSE_FRAME = Frame{
+func newCloseFrame(statusCode uint16) Frame {
+	return Frame{
 		Fin:     true,
 		Opcode:  OPCODE_CLOSE,
 		Length:  2,
-		Payload: binary.BigEndian.AppendUint16(make([]byte, 0), STATUS_CODE_NORMAL_CLOSURE),
+		Payload: binary.BigEndian.AppendUint16(make([]byte, 0), statusCode),
 	}
+}
+
+var (
+	// https://datatracker.ietf.org/doc/html/rfc6455#section-5.5.1
+	CLOSE_FRAME            = newCloseFrame(STATUS_CODE_NORMAL_CLOSURE)
+	CLOSE_GOING_AWAY_FRAME = newCloseFrame(STATUS_CODE_GOING_AWAY)
 )
 
 func (ws *WS) Read() (Frame, error) {
@@ -149,18 +128,6 @@ func (ws *WS) Read() (Frame, error) {
 	}, nil
 }
 
-func mask(key uint32, payload []byte) error {
-	for i, octet := range payload {
-		j := i % 4
-		shiftDistance := 3 - j
-		transform := byte((key >> (shiftDistance * 8)) & 0xFF)
-		after := octet ^ transform
-		// fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
-		payload[i] = after
-	}
-	return nil
-}
-
 func (ws *WS) Send(fr Frame) error {
 	buffer := bytes.Buffer{}
 	firstByte := byte(0)
@@ -192,7 +159,7 @@ func (ws *WS) Send(fr Frame) error {
 		binary.Write(&buffer, binary.BigEndian, fr.Mask)
 	}
 
-	fmt.Printf("TRACE: payload: %v\n", fr.Payload)
+	// fmt.Printf("TRACE: payload: %v\n", fr.Payload)
 	payload := fr.Payload
 	if fr.Masked {
 		mask(fr.Mask, payload)
@@ -278,12 +245,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("Error Reading: %v\n", err)
 			return
 		}
-		frameBytes, err := json.MarshalIndent(frame, "", "  ")
-		if err != nil {
-			fmt.Printf("Error Marshaling Frame: %v\n", err)
-			return
-		}
-		fmt.Printf("Received frame: %v\n", string(frameBytes))
 		if frame.Opcode == OPCODE_CLOSE {
 			fmt.Printf("Closing Connection\n")
 			err := ws.Send(CLOSE_FRAME)
