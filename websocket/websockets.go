@@ -109,8 +109,8 @@ func (ws *WS) Read() (Frame, error) {
 	io.ReadFull(ws.ReadWriter, payload)
 	for i, octet := range payload {
 		j := i % 4
-		// it would be faster to bit shift, but this is easier to read
-		transform := maskBytes[j]
+		shiftDistance := 3 - j
+		transform := byte((mask >> (shiftDistance * 8)) & 0xFF)
 		after := octet ^ transform
 		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
 		payload[i] = after
