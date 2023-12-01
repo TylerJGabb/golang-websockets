@@ -30,10 +30,16 @@ type Frame struct {
 	Payload string `json:"payload"`
 }
 
+var (
+	readCounter int = 0
+)
+
 func (ws *WS) Read() (Frame, error) {
-	const headerSize = 2
-	header := make([]byte, headerSize)
-	ws.ReadWriter.Reader.Read(header)
+	readCounter++
+	fmt.Printf("DEBUG: Inside Read %d\n", readCounter)
+	header := make([]byte, 2)
+	fmt.Printf("DEBUG: About to read Header\n")
+	io.ReadFull(ws.ReadWriter, header)
 	o1 := header[0]
 	o2 := header[1]
 
@@ -78,19 +84,24 @@ func (ws *WS) Read() (Frame, error) {
 	maskBytes := make([]byte, 4)
 	if maskGroup {
 		io.ReadFull(ws.ReadWriter, maskBytes)
-		fmt.Print("MASK: 0X")
+		fmt.Print("MASK: ")
 		for _, b := range maskBytes {
-			fmt.Printf("%02X", b)
+			fmt.Printf("%08b ", b)
 		}
 		fmt.Println()
 	}
 	mask := binary.BigEndian.Uint32(maskBytes)
-	fmt.Printf("MASK: %v\n", mask)
-
 	// not this simple, you need to unmask the payload
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-5.3
 	payload := make([]byte, length)
 	io.ReadFull(ws.ReadWriter, payload)
+	for i, octet := range payload {
+		j := i % 4
+		transform := maskBytes[j]
+		after := octet ^ transform
+		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
+		payload[i] = after
+	}
 
 	return Frame{
 		Fin:     fin,
@@ -164,18 +175,19 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Handshake Complete\n")
-
-	frame, err := ws.Read()
-	if err != nil {
-		fmt.Printf("Error Reading: %v\n", err)
-		return
+	for {
+		frame, err := ws.Read()
+		if err != nil {
+			fmt.Printf("Error Reading: %v\n", err)
+			return
+		}
+		frameBytes, err := json.MarshalIndent(frame, "", "  ")
+		if err != nil {
+			fmt.Printf("Error Marshaling Frame: %v\n", err)
+			return
+		}
+		fmt.Printf("Frame: %v\n", string(frameBytes))
 	}
-	frameBytes, err := json.MarshalIndent(frame, "", "  ")
-	if err != nil {
-		fmt.Printf("Error Marshaling Frame: %v\n", err)
-		return
-	}
-	fmt.Printf("Frame: %v\n", string(frameBytes))
 }
 
 func Server() {
