@@ -13,6 +13,7 @@ import (
 
 	"net/http"
 	// yaml "gopkg.in/yaml.v3"
+	socks "tg.sandbox/websocket"
 )
 
 var (
@@ -151,14 +152,16 @@ func main() {
 	// 		panic(err)
 	// 	}
 	// }()
-	go func() {
-		StartSockServer()
-	}()
-	for {
-		time.Sleep(5 * time.Second)
-		SockClientSendMsg()
-	}
+	// go func() {
+	// 	StartSockServer()
+	// }()
+	// for {
+	// 	time.Sleep(5 * time.Second)
+	// 	SockClientSendMsg()
+	// }
 	// sleep forever
+	socks.Server()
+	http.ListenAndServe("localhost:8080", nil)
 	select {}
 
 }
