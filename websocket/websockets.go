@@ -23,11 +23,6 @@ const (
 )
 
 const (
-	FRAME_FIN_NO_MORE_FRAMES = 0x0
-	FRAME_FIN_MORE_FRAMES    = 0x1
-)
-
-const (
 	STATUS_CODE_NORMAL_CLOSURE             = 1000
 	STATUS_CODE_GOING_AWAY                 = 1001
 	STATUS_CODE_PROTOCOL_ERROR             = 1002
@@ -62,14 +57,16 @@ type Frame struct {
 	Masked  bool   `json:"masked"`
 	Length  uint64 `json:"length"`
 	Mask    uint32 `json:"mask"`
-	Payload string `json:"payload"`
+	Payload []byte `json:"payload"`
 }
 
 var (
+	// https://datatracker.ietf.org/doc/html/rfc6455#section-5.5.1
 	CLOSE_FRAME = Frame{
-		Fin:    true,
-		Opcode: OPCODE_CLOSE,
-		Length: 0,
+		Fin:     true,
+		Opcode:  OPCODE_CLOSE,
+		Length:  2,
+		Payload: binary.BigEndian.AppendUint16(make([]byte, 0), STATUS_CODE_NORMAL_CLOSURE),
 	}
 )
 
@@ -86,8 +83,8 @@ func (ws *WS) Read() (Frame, error) {
 	rsv1 := o1&0x40 != 0
 	rsv2 := o1&0x20 != 0
 	rsv3 := o1&0x10 != 0
+	opcode := o1 & 0x0F
 	isMasked := o2&0x80 != 0
-	opcode := o2 & 0x7f
 	fmt.Printf("FIN: %v\n", fin)
 	fmt.Printf("RSV1: %v\n", rsv1)
 	fmt.Printf("RSV2: %v\n", rsv2)
@@ -134,6 +131,11 @@ func (ws *WS) Read() (Frame, error) {
 	io.ReadFull(ws.ReadWriter, payload)
 	mask(maskKey, payload)
 
+	if opcode == OPCODE_CLOSE {
+		status_code := binary.BigEndian.Uint16(payload)
+		fmt.Printf("STATUS_CODE: %v\n", status_code)
+	}
+
 	return Frame{
 		Fin:     fin,
 		Rsv1:    rsv1,
@@ -143,7 +145,7 @@ func (ws *WS) Read() (Frame, error) {
 		Masked:  isMasked,
 		Mask:    maskKey,
 		Length:  length,
-		Payload: string(payload),
+		Payload: payload,
 	}, nil
 }
 
@@ -153,7 +155,7 @@ func mask(key uint32, payload []byte) error {
 		shiftDistance := 3 - j
 		transform := byte((key >> (shiftDistance * 8)) & 0xFF)
 		after := octet ^ transform
-		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
+		// fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
 		payload[i] = after
 	}
 	return nil
@@ -161,37 +163,41 @@ func mask(key uint32, payload []byte) error {
 
 func (ws *WS) Send(fr Frame) error {
 	buffer := bytes.Buffer{}
-	o0 := byte(0)
-	o0 |= 0x80 // FIN
-	o0 |= byte((fr.Opcode >> 4) & 0xFF)
-	buffer.WriteByte(o0)
+	firstByte := byte(0)
+	if fr.Fin {
+		firstByte |= 0x80
+	}
+	firstByte |= fr.Opcode
+	buffer.WriteByte(firstByte)
+
+	secondByte := byte(0)
+	if fr.Masked {
+		secondByte |= 0x80
+	}
 	if fr.Length < 126 {
-		o1 := byte(0)
-		if fr.Masked {
-			o1 |= 0x80
-		}
-		o1 |= byte((fr.Length >> 1) & 0xFF)
-		buffer.WriteByte(o1)
+		secondByte |= byte(fr.Length)
+		buffer.WriteByte(secondByte)
 	} else if fr.Length < 65536 {
-		buffer.WriteByte(126)
+		secondByte |= 126
+		buffer.WriteByte(secondByte)
 		binary.Write(&buffer, binary.BigEndian, uint16(fr.Length))
 	} else {
-		buffer.WriteByte(127)
+		secondByte |= 127
+		buffer.WriteByte(secondByte)
 		binary.Write(&buffer, binary.BigEndian, uint64(fr.Length))
 	}
+
+	fmt.Printf("TRACE: first two bytes: %08b %08b\n", firstByte, secondByte)
 	if fr.Masked {
-		buffer.WriteByte(0x80)
 		binary.Write(&buffer, binary.BigEndian, fr.Mask)
-	} else {
-		buffer.WriteByte(0x00)
 	}
-	payload := []byte(fr.Payload)
+
+	fmt.Printf("TRACE: payload: %v\n", fr.Payload)
+	payload := fr.Payload
 	if fr.Masked {
 		mask(fr.Mask, payload)
 	}
 	buffer.Write(payload)
-	jsonFr, _ := json.MarshalIndent(fr, "", "  ")
-	fmt.Printf("TRACE: Sending Frame: %v\n", string(jsonFr))
 	ws.ReadWriter.Write(buffer.Bytes())
 	ws.ReadWriter.Flush()
 	return nil
@@ -218,7 +224,16 @@ func (ws *WS) Handshake() error {
 }
 
 func (ws *WS) Close() error {
-	return ws.Send(CLOSE_FRAME)
+	fmt.Printf("TRACE: Sending Close Frame\n")
+	if err := ws.Send(CLOSE_FRAME); err != nil {
+		return fmt.Errorf("Error Sending Close Frame: %v", err)
+	}
+	fmt.Printf("TRACE: Closing Connection\n")
+	if err := ws.Connection.Close(); err != nil {
+		return fmt.Errorf("Error Closing Connection: %v", err)
+	}
+	return nil
+
 }
 
 func NewWS(w http.ResponseWriter, r *http.Request) (*WS, error) {
@@ -256,7 +271,8 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Handshake Complete\n")
-	for i := 0; i < 3; i++ {
+	fmt.Printf("Reading Frames\n")
+	for {
 		frame, err := ws.Read()
 		if err != nil {
 			fmt.Printf("Error Reading: %v\n", err)
@@ -267,9 +283,22 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("Error Marshaling Frame: %v\n", err)
 			return
 		}
-		fmt.Printf("Frame: %v\n", string(frameBytes))
+		fmt.Printf("Received frame: %v\n", string(frameBytes))
+		if frame.Opcode == OPCODE_CLOSE {
+			fmt.Printf("Closing Connection\n")
+			err := ws.Send(CLOSE_FRAME)
+			if err != nil {
+				fmt.Printf("Error Sending Close Frame: %v\n", err)
+			}
+			return
+		}
+		outFrame := Frame{}
+		outFrame.Fin = true
+		outFrame.Opcode = OPCODE_TEXT
+		outFrame.Payload = []byte("ECHO: " + string(frame.Payload))
+		outFrame.Length = uint64(len(outFrame.Payload))
+		ws.Send(outFrame)
 	}
-	ws.Close()
 }
 
 func Server() {
