@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -26,6 +27,22 @@ const (
 	FRAME_FIN_MORE_FRAMES    = 0x1
 )
 
+const (
+	STATUS_CODE_NORMAL_CLOSURE             = 1000
+	STATUS_CODE_GOING_AWAY                 = 1001
+	STATUS_CODE_PROTOCOL_ERROR             = 1002
+	STATUS_CODE_UNSUPPORTED_DATA_TYPE      = 1003
+	STATUS_CODE_RESERVED                   = 1004
+	STATUS_CODE_NO_STATUS_CODE_PRESENT     = 1005
+	STATUS_CODE_ABNORMAL_CLOSURE           = 1006
+	STATUS_CODE_INVALID_FRAME_PAYLOAD_DATA = 1007
+	STATUS_CODE_POLICY_VIOLATION           = 1008
+	STATUS_CODE_MESSAGE_TOO_BIG            = 1009
+	STATUS_CODE_MANDATORY_EXTENSION        = 1010
+	STATUS_CODE_INTERNAL_SERVER_ERROR      = 1011
+	STATUS_CODE_TLS_HANDSHAKE              = 1015
+)
+
 var (
 	readCounter int = 0
 )
@@ -47,6 +64,14 @@ type Frame struct {
 	Mask    uint32 `json:"mask"`
 	Payload string `json:"payload"`
 }
+
+var (
+	CLOSE_FRAME = Frame{
+		Fin:    true,
+		Opcode: OPCODE_CLOSE,
+		Length: 0,
+	}
+)
 
 func (ws *WS) Read() (Frame, error) {
 	readCounter++
@@ -104,17 +129,10 @@ func (ws *WS) Read() (Frame, error) {
 		}
 		fmt.Println()
 	}
-	mask := binary.BigEndian.Uint32(maskBytes)
+	maskKey := binary.BigEndian.Uint32(maskBytes)
 	payload := make([]byte, length)
 	io.ReadFull(ws.ReadWriter, payload)
-	for i, octet := range payload {
-		j := i % 4
-		shiftDistance := 3 - j
-		transform := byte((mask >> (shiftDistance * 8)) & 0xFF)
-		after := octet ^ transform
-		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
-		payload[i] = after
-	}
+	mask(maskKey, payload)
 
 	return Frame{
 		Fin:     fin,
@@ -123,13 +141,59 @@ func (ws *WS) Read() (Frame, error) {
 		Rsv3:    rsv3,
 		Opcode:  opcode,
 		Masked:  isMasked,
-		Mask:    mask,
+		Mask:    maskKey,
 		Length:  length,
 		Payload: string(payload),
 	}, nil
 }
 
+func mask(key uint32, payload []byte) error {
+	for i, octet := range payload {
+		j := i % 4
+		shiftDistance := 3 - j
+		transform := byte((key >> (shiftDistance * 8)) & 0xFF)
+		after := octet ^ transform
+		fmt.Printf("TRACE: octet: %08b, transform: %08b, after: %08b\n", octet, transform, after)
+		payload[i] = after
+	}
+	return nil
+}
+
 func (ws *WS) Send(fr Frame) error {
+	buffer := bytes.Buffer{}
+	o0 := byte(0)
+	o0 |= 0x80 // FIN
+	o0 |= byte((fr.Opcode >> 4) & 0xFF)
+	buffer.WriteByte(o0)
+	if fr.Length < 126 {
+		o1 := byte(0)
+		if fr.Masked {
+			o1 |= 0x80
+		}
+		o1 |= byte((fr.Length >> 1) & 0xFF)
+		buffer.WriteByte(o1)
+	} else if fr.Length < 65536 {
+		buffer.WriteByte(126)
+		binary.Write(&buffer, binary.BigEndian, uint16(fr.Length))
+	} else {
+		buffer.WriteByte(127)
+		binary.Write(&buffer, binary.BigEndian, uint64(fr.Length))
+	}
+	if fr.Masked {
+		buffer.WriteByte(0x80)
+		binary.Write(&buffer, binary.BigEndian, fr.Mask)
+	} else {
+		buffer.WriteByte(0x00)
+	}
+	payload := []byte(fr.Payload)
+	if fr.Masked {
+		mask(fr.Mask, payload)
+	}
+	buffer.Write(payload)
+	jsonFr, _ := json.MarshalIndent(fr, "", "  ")
+	fmt.Printf("TRACE: Sending Frame: %v\n", string(jsonFr))
+	ws.ReadWriter.Write(buffer.Bytes())
+	ws.ReadWriter.Flush()
 	return nil
 }
 
@@ -151,6 +215,10 @@ func (ws *WS) Handshake() error {
 	ws.ReadWriter.Write([]byte("\n"))
 	ws.ReadWriter.Flush()
 	return nil
+}
+
+func (ws *WS) Close() error {
+	return ws.Send(CLOSE_FRAME)
 }
 
 func NewWS(w http.ResponseWriter, r *http.Request) (*WS, error) {
@@ -188,7 +256,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Handshake Complete\n")
-	for {
+	for i := 0; i < 3; i++ {
 		frame, err := ws.Read()
 		if err != nil {
 			fmt.Printf("Error Reading: %v\n", err)
@@ -201,6 +269,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Printf("Frame: %v\n", string(frameBytes))
 	}
+	ws.Close()
 }
 
 func Server() {
