@@ -25,7 +25,7 @@ type WebSocket interface {
 	Handshake() error
 	ReadFrame() (WebSocketFrame, error)
 	WriteFrame(frame WebSocketFrame) error
-	// Close(statusCode uint16) error
+	SendCloseFrame(statusCode uint16) error
 	ForceClose() error
 }
 

@@ -5,9 +5,6 @@ import (
 	"net/http"
 )
 
-// wait for a new message to arrive, then send it to the channel?
-// need to learn about channels
-
 func loopWsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Handling websocket request")
 	fmt.Printf("%v %s %v\n", r.Method, r.URL, r.Proto)
@@ -27,28 +24,42 @@ func loopWsHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Error handshaking")
 		return
 	}
-	// read indefinitely until the connection is closed by the reader
-	// send read frames to the channel
-	// that seems like the best way to do this, reading frame by frame.
+	for {
+		frame, err := ws.ReadFrame()
+		if err != nil {
+			fmt.Printf("Error reading frame: %v\n", err)
+			ws.ForceClose()
+			return
+		}
+		switch frame.Header.Opcode {
+		case OPCODE_CLOSE:
+			ws.SendCloseFrame(STATUS_CODE_NORMAL_CLOSURE)
+			ws.ForceClose()
+			return
+		case OPCODE_PING:
+			fmt.Println("Received ping")
+			ws.WriteFrame(PONG_FRAME)
+			return
+		case OPCODE_PONG:
+			fmt.Println("Received pong")
+			return
+		default:
+			fmt.Printf("Received opcode: %v\n", frame.Header.Opcode)
+		}
 
-	frame, err := ws.ReadFrame()
-	if err != nil {
-		fmt.Printf("Error reading frame: %v\n", err)
-		ws.ForceClose()
-		return
+		preview := frame.Payload[0:min(30, frame.Header.Length)]
+		fmt.Printf("Frame: %s\n", preview)
+		responsePayload := "Echo: " + string(preview)
+		echoFrame := WebSocketFrame{
+			Header: FrameHeader{
+				Fin:    true,
+				Opcode: OPCODE_TEXT,
+				Length: uint64(len(responsePayload)),
+			},
+			Payload: []byte(responsePayload),
+		}
+		ws.WriteFrame(echoFrame)
 	}
-	preview := frame.Payload[0:min(30, frame.Header.Length)]
-	fmt.Printf("Frame: %s\n", preview)
-	responsePayload := "Echo: " + string(preview)
-	echoFrame := WebSocketFrame{
-		Header: FrameHeader{
-			Fin:    true,
-			Opcode: OPCODE_TEXT,
-			Length: uint64(len(responsePayload)),
-		},
-		Payload: []byte(responsePayload),
-	}
-	ws.WriteFrame(echoFrame)
 }
 
 func Start() {

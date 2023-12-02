@@ -93,6 +93,16 @@ func (ws *HttpHijackingWebSocket) WriteFrame(frame WebSocketFrame) error {
 	return ws.rw.Flush()
 }
 
+func (ws *HttpHijackingWebSocket) SendCloseFrame(statusCode uint16) error {
+	fmt.Printf("TRACE: Sending Close Frame\n")
+	closeFrame := NewCloseFrameHelper(statusCode)
+	err := ws.WriteFrame(closeFrame)
+	if err != nil {
+		return fmt.Errorf("Error Sending Close Frame: %v", err)
+	}
+	return nil
+}
+
 func (ws *HttpHijackingWebSocket) readHeader() (FrameHeader, error) {
 	buf := make([]byte, 2)
 	_, err := io.ReadFull(ws.rw, buf)
