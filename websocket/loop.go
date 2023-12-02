@@ -68,7 +68,7 @@ func Start() {
 	go func() {
 		err := http.ListenAndServe("localhost:8080", nil)
 		if err != nil {
-			fmt.Println("Error starting websocket server")
+			panic(err)
 		}
 	}()
 	fmt.Println("Websocket server started, listening on localhost:8080")
