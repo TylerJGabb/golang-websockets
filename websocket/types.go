@@ -27,6 +27,7 @@ type WebSocket interface {
 	WriteFrame(frame WebSocketFrame) error
 	SendCloseFrame(statusCode uint16) error
 	ForceClose() error
+	SendText(text string) error
 }
 
 func (fh *FrameHeader) ForWire() []byte {
