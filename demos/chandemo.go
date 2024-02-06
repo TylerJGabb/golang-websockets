@@ -1,6 +1,7 @@
-package main
+package demos
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -90,4 +91,52 @@ func demo3() {
 
 	var input string
 	fmt.Scanln(&input)
+}
+
+type ForWireCloseable struct {
+	outChan chan []string
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+func (fwc *ForWireCloseable) Send(str ...string) {
+	fmt.Printf("CHAN_WRITE_0 str=%s\n", str)
+	fwc.outChan <- str
+	fmt.Printf("CHAN_WRITE_1 str=%s\n", str)
+}
+
+func (fwc *ForWireCloseable) Close() {
+	fwc.cancel()
+}
+
+func NewForWireCloseable() *ForWireCloseable {
+	outChan := make(chan []string, 10)
+	ctx, cancel := context.WithCancel(context.TODO())
+	fwcP := &ForWireCloseable{
+		outChan: outChan,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	go func() {
+	Loop:
+		for {
+			select {
+			case msg := <-outChan:
+				dur := time.Millisecond * time.Duration(500+rand.Intn(500))
+				fmt.Printf("CHAN_READ msg=%v, dur=%v\n", msg, dur)
+				time.Sleep(dur)
+
+			case <-ctx.Done():
+				fmt.Printf("closeChan\n")
+				break Loop
+
+			case <-time.After(time.Second * 2):
+				fmt.Printf("chanloop tick %p\n", fwcP)
+
+			}
+		}
+		fmt.Println("Terminating chan loop")
+	}()
+	fmt.Printf("%+v\n", fwcP)
+	return fwcP
 }

@@ -20,6 +20,8 @@ type HttpHijackingWebSocket struct {
 	connection net.Conn
 	rw         *bufio.ReadWriter
 	header     http.Header
+	outChan    chan WebSocketFrame
+	closeChan  chan bool
 }
 
 func NewHttpHijackingWebSocket(w http.ResponseWriter, r *http.Request) (*HttpHijackingWebSocket, error) {
@@ -31,11 +33,38 @@ func NewHttpHijackingWebSocket(w http.ResponseWriter, r *http.Request) (*HttpHij
 	if err != nil {
 		return nil, fmt.Errorf("Unable to hijack HTTP connection: %v", err)
 	}
-	return &HttpHijackingWebSocket{
+	outChan := make(chan WebSocketFrame)
+	closeChan := make(chan bool)
+	ws := &HttpHijackingWebSocket{
 		connection: connection,
 		rw:         rw,
 		header:     r.Header,
-	}, nil
+		outChan:    outChan,
+		closeChan:  closeChan,
+	}
+	go func() {
+		fmt.Printf("Starting chan loop %p\n", ws)
+	Loop:
+		for {
+			select {
+			case forWire := <-outChan:
+				fmt.Printf("chan loop %p: inside forWire\n", ws)
+				err := ws.writeFrame(forWire)
+				if err != nil {
+					fmt.Printf("Error writing frame: %v\n", err)
+					ws.ForceClose()
+					return
+				}
+			case <-closeChan:
+				fmt.Printf("chan loop %p: inside closeChan\n", ws)
+				fmt.Println("Terminating chan loop")
+				break Loop
+			}
+
+		}
+		fmt.Printf("Ending chan loop %p\n", ws)
+	}()
+	return ws, nil
 }
 
 func (ws *HttpHijackingWebSocket) Handshake() error {
@@ -64,6 +93,7 @@ func (ws *HttpHijackingWebSocket) Handshake() error {
 
 func (ws *HttpHijackingWebSocket) ForceClose() error {
 	fmt.Printf("WARN: Closing Connection Forcefully\n")
+	ws.closeChan <- true
 	return ws.connection.Close()
 }
 
@@ -82,7 +112,7 @@ func (ws *HttpHijackingWebSocket) ReadFrame() (WebSocketFrame, error) {
 	return frame, nil
 }
 
-func (ws *HttpHijackingWebSocket) WriteFrame(frame WebSocketFrame) error {
+func (ws *HttpHijackingWebSocket) writeFrame(frame WebSocketFrame) error {
 	buffer := bytes.Buffer{}
 	buffer.Write(frame.Header.ForWire())
 	if frame.Header.Masked {
@@ -93,18 +123,22 @@ func (ws *HttpHijackingWebSocket) WriteFrame(frame WebSocketFrame) error {
 	return ws.rw.Flush()
 }
 
+func (ws *HttpHijackingWebSocket) WriteFrame(frame WebSocketFrame) error {
+	ws.outChan <- frame
+	return nil
+}
+
 func (ws *HttpHijackingWebSocket) SendCloseFrame(statusCode uint16) error {
-	// fmt.Printf("TRACE: Sending Close Frame\n")
 	closeFrame := NewCloseFrameHelper(statusCode)
 	err := ws.WriteFrame(closeFrame)
 	if err != nil {
+		ws.closeChan <- true
 		return fmt.Errorf("Error Sending Close Frame: %v", err)
 	}
 	return nil
 }
 
 func (ws *HttpHijackingWebSocket) SendText(text string) error {
-	// fmt.Printf("TRACE: Sending Text Frame\n")
 	payload := []byte(text)
 	header := FrameHeader{
 		Fin:    true,
@@ -128,7 +162,6 @@ func (ws *HttpHijackingWebSocket) readHeader() (FrameHeader, error) {
 	if err != nil {
 		return FrameHeader{}, err
 	}
-	// fmt.Printf("TRACE: first two bytes: %08b %08b\n", buf[0], buf[1])
 
 	section0 := buf[0]
 	section1 := buf[1]
@@ -138,13 +171,6 @@ func (ws *HttpHijackingWebSocket) readHeader() (FrameHeader, error) {
 	rsv3 := section0&0x10 != 0
 	opcode := section0 & 0x0F
 	isMasked := section1&0x80 != 0
-
-	// fmt.Printf("TRACE: fin: %v\n", fin)
-	// fmt.Printf("TRACE: rsv1: %v\n", rsv1)
-	// fmt.Printf("TRACE: rsv2: %v\n", rsv2)
-	// fmt.Printf("TRACE: rsv3: %v\n", rsv3)
-	// fmt.Printf("TRACE: opcode: %v\n", opcode)
-	// fmt.Printf("TRACE: isMasked: %v\n", isMasked)
 
 	length := uint64(section1 & 0x7f)
 	if length == 126 {
@@ -158,14 +184,13 @@ func (ws *HttpHijackingWebSocket) readHeader() (FrameHeader, error) {
 		io.ReadFull(ws.rw, lengthBytes)
 		length = binary.BigEndian.Uint64(lengthBytes)
 	}
-	// fmt.Printf("TRACE: length: %v\n", length)
 
 	maskBytes := make([]byte, 4)
 	if isMasked {
 		io.ReadFull(ws.rw, maskBytes)
 	}
 	maskKey := binary.BigEndian.Uint32(maskBytes)
-	// fmt.Printf("TRACE: maskKey: %08b_%08b_%08b_%08b\n", maskBytes[0], maskBytes[1], maskBytes[2], maskBytes[3])
+
 	return FrameHeader{
 		Fin:    fin,
 		Rsv1:   rsv1,
